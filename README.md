@@ -1,2 +1,3 @@
 # MiniON-NGS-DataAnalysis
 Repository of code used for pipeline construction for the analysis of MiniON generated NGS data  
+Note: Only the code with the word pipeline are runnable as the remaining code are fuctions that are parts of the pipelines still under development and version control... 
