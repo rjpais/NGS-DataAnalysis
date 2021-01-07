@@ -1,6 +1,6 @@
 #============================================================================================================================
 """
-MEDAKA PIPELINE VERSION ALPHA 1
+MEDAKA PIPELINE VERSION ALPHA VERSION 1 SINGLE FILE PROCESSING 
 AUTHOR: RICARDO JORGE PAIS @ INSA   
 DATE OF LAST UPDATE: 22/12/2020
 THE SCRIPT PERFORMS AN AUTOMATED RUN OF MEDAKA METHOD FOR NGS SEQUENCING DATA USING OXFORD NANOPORE TECKNOLOGIES 
@@ -20,7 +20,12 @@ AS OUTPUTS, THE SCRIPT GENERATES THE FOLOWING FILES ON A NEW GENERATED FOLDER:
 #============================================================================================================================
 import os 
 import gzip
-import time 
+import time
+from sys import exit  
+import shutil
+from tkinter import *
+from tkinter import filedialog # for easy runing on files and for lab users without using insaflu
+
 
 #1 function for getting the sample ID name from filepath defined by user 
 #--------------------------------------------------------------------------------------------------------------------------
@@ -41,13 +46,20 @@ def Medaka_consensus_prediction(samplepath ,refpath, model):
 	if model = "default" it runs as original default model 
 	Saves otput files on a folder with sampleIDname and return the 3 key outputs file paths for further processing      	
 	"""
-	I, M, R  = samplepath, model, refpath
-	O = samplepath.split(".")[0] # output folder
+	I, M, R  = samplepath , model, refpath
+	O = samplepath.split("_HQonly")[0]  # output folder
+	output_exists = os.path.isdir(O)
+	if output_exists == True:
+		shutil.rmtree(O)
 	if M == "default":
  		commands =  "medaka_consensus -i "+ I +" -d "+ R +  " -o " + O
 	else:
  		commands =  "medaka_consensus -i "+ I +" -d "+ R +  " -o " + O + " -m " + M 
 	os.system(commands)
+	exist_status = os.system(commands)
+	if (exist_status != 0):
+		print('Fail to run medaka consensus tool commands\n please ensure medaka is installed and run again the pipeline')
+		exit(0)		
 	bamFile = O + "/calls_to_draft.bam" 
 	ProbsFile = O + "/consensus_probs.hdf"
 	Consensus = O + "/consensus.fasta"
@@ -64,6 +76,10 @@ def CoverageExtraction(bam):
 	Output_file = bam.split("calls_to_draft")[0] + "reads_coverage.depth"
 	commands =  "samtools depth -aa -d0 " + bam + " > " + Output_file 
 	os.system(commands)
+	exist_status = os.system(commands)
+	if (exist_status != 0):
+		print('Fail to run samtools commands\n please ensure that the tool is installed and run again the pipeline')
+		exit(0)		
 	print ("reads_coverage.depth was created")
 	with open(Output_file, "rb") as initial:
 		with gzip.open(Output_file + ".gz", "wb" ) as zipped:  
@@ -81,8 +97,12 @@ def VariantCalling_Medaka(probs, ref):
 	Also """
 	Output_file = probs.split("consensus_probs")[0] + "medaka_variant.vcf"
 	commands =  "medaka variant --verbose " + ref + " " + probs + " " + Output_file
-	print ("medaka_variant.vcf file was created") 
 	os.system(commands)
+	exist_status = os.system(commands)
+	if (exist_status != 0):
+		print('Fail to run medaka variant call commands\n please ensure that the tool is installed and run again the pipeline')
+		exit(0)	
+	print ("medaka_variant.vcf file was created") 
 	return Output_file
 #-------------------------------------------------------------------------------------------------------------------------- 
  
@@ -109,21 +129,22 @@ def Add_SampleIDinfo_fasta(fastafile, info):
 #-------------------------------------------------------------------------------------------------------------------------- 
  
 
-#6 function for getting the mutational positions from consensus  
+#6 function for getting the mutational positions and relevant information from VCF file  
 #-------------------------------------------------------------------------------------------------------------------------- 
-def Get_Variant_Positions(VCFpath):
+def Get_Variant_PositionsMutationScores(VCFpath):
 	""" 
 	VCFpath is the variant.vcf file path
 	returns a list with all positions
 	"""
-	mutpos = []
+	POSITIONS, MUTATIONS, SCORES = [ ], [ ],[ ] 
 	vcf_file = open( VCFpath, "r" )
 	for line in vcf_file:
 		if line[0] !="#":
-			position = line.split("\t")[1]
-			mutpos.append(position)
+			POSITIONS.append(line.split("\t")[1])
+			MUTATIONS.append(line.split("\t")[3] + "-->" + line.split("\t")[4])
+			SCORES.append(line.split("\t")[7].split("pred_q=")[1].split(";")[0] )
 	vcf_file.close() 
-	return mutpos
+	return [POSITIONS, MUTATIONS, SCORES]
 #-------------------------------------------------------------------------------------------------------------------------- 
 
 
@@ -153,20 +174,21 @@ def Write_VCF_with_CoverageValues(coveragevalues, VCFpath):
 	VCFpath is the path of the file with variants
  	a new VCF file is produced that overwrites the previous one   
         """
-	VCF2, n  = "", 0
-	header2 = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tCOVERAGE\tFORMAT\tSAMPLE\n"	 
+	VCF2, n, k  = "", 0, 0
+	addInfo = '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth value of the nucleotide position">\n'	 
 	VCF_file = open( VCFpath, "r" )
 	for line in VCF_file:
-		if line[0:2] == "##":
+		if line[0] == "#" and k != 10:
 			VCF2 = VCF2 + line
-		elif line[0] == "#" and line[1] != "#":
-			VCF2 = VCF2 + header2
-		else: 
+		elif line[0] == "#" and k == 10:
+			VCF2 = VCF2 + addInfo 
+		elif line[0] != "#": 
 			C = line.split("\t")
-			Kn = "DP=" + coveragevalues[n].split("\n")[0] 
-			row = C[0]+"\t"+C[1]+"\t"+C[2] +"\t"+C[3]+"\t"+C[4]+"\t"+C[5]+"\t"+C[6]+"\t"+C[7]+"\t"+ Kn +"\t"+C[8]+"\t"+C[9] 
+			INFO_new = C[7] + ";DP=" + coveragevalues[n].split("\n")[0] 
+			row = C[0]+"\t"+C[1]+"\t"+C[2] +"\t"+C[3]+"\t"+C[4]+"\t"+C[5]+"\t"+C[6]+"\t"+ INFO_new +"\t"+C[8]+"\t"+C[9] 
 			VCF2 = VCF2 + row 
-			n=n+1		
+			n=n+1
+		k = k+1		
 	VCF_file.close()
 	VCF_file = open(VCFpath, "w" )
 	VCF_file.write(VCF2)
@@ -210,26 +232,55 @@ def UnecessaryFiles_remove(Gpath, Spath):
 			os.remove(path+"/"+File) 
 			print("file ", File, " removed" )
 #-------------------------------------------------------------------------------------------------------------------------- 
-	 
+
+#10 function for filtering and get only high quality reads  
+#-------------------------------------------------------------------------------------------------------------------------- 
+def HQfilterReads(path, Q ):
+	""" passes the commands of NanoFilt for generating a fastq file only with better quality reads  
+	Requires the entery of full path of fastq reads file and the minimum quality to filter (Q)  
+	Also """
+	Output_file = path.split(".")[0] + "_HQonly.fastq.gz"	
+	commands =  "gunzip -c " + path + " | NanoFilt -q " + str(Q) + "  | gzip > " + Output_file
+	print ("\n ...filtering reads with quality > Q", str(Q), " \n ")
+	os.system(commands)
+	exist_status = os.system(commands)
+	if (exist_status != 0):
+		print('Fail to run NanoFilt tool commands for HQ reads filtering \n please ensure that the tool is installed and run again the pipeline')
+		exit(0)		 
+	return Output_file
+	
 
 # NANOPORE MEDAKA PIPELINE   
 start = time.time()
 print ("=========================================================================")
-print ("AUTOMATED RUN OF MEDAKA METHOD FOR A ONT READS (ADAPTED FOR INSaFlu)  ")
+print ("AUTOMATED PIPELINE FOR SINGLE FILE MiniON READS DATA PROCESSING   ")
 print ("=========================================================================")
 
 
-# 0 Inputs that need to be passed by user on the platform insaflu
+# 0A Inputs that need to be passed by user on the platform insaflu
 sample_reads_path = "/home/ricardo/TELE-VIRproject/NANOporeTESTdata/ERR4082025_1.fastq.gz"
 RefGenome_path = "/home/ricardo/TELE-VIRproject/NANOporeTESTdata/SARS_CoV_2_Wuhan_Hu_1_MN908947.fasta"
 model = "r941_min_fast_g303"   
+# 0B Inputs that need to be passed by user on commandline usage
+Tk().withdraw()
+sample_reads_path = filedialog.askopenfilename( title = "open sample reads file from MiniON (fastq)" ) 
+Tk().withdraw()
+RefGenome_path = filedialog.askopenfilename( title = "open reference genome fasta file" ) 
 
 
-# STEP 1 runing medaka for generating consensus prediction, BAM and probabilities files   
-print("\n\n STEP 1: Running Medaka consensus prediction tool")
+
+# STEP 1 Quality filtering reads data using NanoFilt method   
+print("\n\n STEP 1: Filtering reads for High quality selection")
 print ("=========================================================================")
-MedakaOutputs = Medaka_consensus_prediction (sample_reads_path , 
-RefGenome_path , model)
+Q = input("insert quality threshold filter value and press enter :   ") 
+HQsample_reads_path= HQfilterReads( sample_reads_path, int(float(Q)) )
+print("A high quality reads file was created")
+
+
+# STEP 2 runing medaka for generating a consensus prediction, BAM and probabilities files   
+print("\n\n STEP 2: Generating a consensus sequence using Medaka neural network")
+print ("=========================================================================")
+MedakaOutputs = Medaka_consensus_prediction (HQsample_reads_path , RefGenome_path , model)
 Consensus = MedakaOutputs[2]
 ProbFile = MedakaOutputs[1]
 BAMfile = MedakaOutputs[0]
@@ -241,32 +292,33 @@ for File in MedakaOutputs:
 print ("\n=========================================================================")
 
 
-# STEP2 Generation of a coverage/depth file from medaka BAM file
-print("\n\n STEP 2: Computing reads coverage using samtools")
+# STEP3 Generation of a coverage/depth file from medaka BAM file
+print("\n\n STEP 3: Computing reads coverage using samtools")
 print ("=========================================================================\n")
 SampleCoverageFile = CoverageExtraction(BAMfile)
 print ("=========================================================================")
 
 
-# STEP3 Variant calling  from medaka probabilities and reference genome with insaflu format
-print("\n\n STEP 3: Computing variant calls using medaka variant method")
+# STEP4 Variant calling from medaka probabilities and reference genome with insaflu format
+print("\n\n STEP 4: Computing variant calls using medaka variant method")
 print ("=========================================================================\n")
 VCFfile = VariantCalling_Medaka(ProbFile, RefGenome_path)
-Mutationalpositions = Get_Variant_Positions(VCFfile)
-Coverages = Get_Variant_CoverageValues(Mutationalpositions, SampleCoverageFile)
-print("Position Coverage" )
-for i, pos in enumerate(Mutationalpositions):
-	print(pos, "\t", Coverages[i][0:-1] )	
-print ( "Total of ", len(Mutationalpositions), " putative mutations detected!!")
-#Write_VCF_with_CoverageValues(Coverages, VCFfile )
-
-
-# STEP4 Removing and Renamming output files with insaflu standard form
-print("\n\n STEP 4: Removing intermediate files and renaming output files")
-print ("=========================================================================\n")
-#UnecessaryFiles_remove(RefGenome_path, sample_reads_path)
-INSaFlu_files_renamming(sample_reads_path) 
+MutINFO = Get_Variant_PositionsMutationScores(VCFfile)
+Coverages = Get_Variant_CoverageValues(MutINFO[0], SampleCoverageFile)
+print("\nPos      mutation         Score         Depth" )
+for i, INFO in enumerate(MutINFO[0]):
+	print(INFO, "\t", MutINFO[1][i], "    \t", MutINFO[2][i], "\t",Coverages[i][0:-1] )	
+print ( "\nTotal of ", len(MutINFO[0]), " putative mutations detected!!")
+Write_VCF_with_CoverageValues(Coverages, VCFfile )
 print ("=========================================================================")
+
+
+# STEP5 Removing and Renamming output files with insaflu standard form
+print("\n\n STEP 5: Removing intermediate files and renaming output files")
+print ("=========================================================================\n")
+UnecessaryFiles_remove(RefGenome_path, sample_reads_path)
+INSaFlu_files_renamming(sample_reads_path) 
+print ("\n=========================================================================")
 print ("*******************END OF PROCESS*****THANK YOU *****************************   ")
 print ("              Total processing time = ", round(time.time() - start , 1 ), " seconds ")
 print ("=========================================================================")
